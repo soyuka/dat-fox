@@ -4,6 +4,37 @@ const pacFileUrl = browser.extension.getURL(pacFile);
 const datSites = new Set();
 const datUrlMatcher = /^[0-9a-f]{64}(\+[0-9]+)?$/
 
+const port = browser.runtime.connectNative("datbridge");
+console.log('connected', port);
+
+let messageIdx = 0;
+const waitingForResponse = new Map();
+
+function postMessageNative(message) {
+    console.log('send', message);
+    return new Promise((resolve, reject) => {
+        message.id = messageIdx++;
+        waitingForResponse.set(message.id, {
+            resolve,
+            reject,
+        });
+        port.postMessage(message);
+    });
+}
+
+port.onMessage.addListener((response) => {
+    console.log("Received: " + JSON.stringify(response));
+    if (waitingForResponse.has(response.id)) {
+        const { resolve, reject } = waitingForResponse.get(response.id);
+        waitingForResponse.delete(response.id);
+        if (response.error) {
+            reject(response.error);
+        } else {
+            resolve(response.result);
+        }
+    }
+});
+
 // in order to create a valid origin for dat sites we need to 'invent'
 // hostnames for them. We can do this via a pac file which proxies requests
 // for domains we want to serve over dat to the dat-gateway. This hack allows
@@ -12,7 +43,7 @@ browser.proxy.register(pacFile).then(() => {
     // instruct pac script to proxy these hosts
     datSites.forEach((host) => {
         addDatSite(host);
-    });    
+    });
 });
 
 // log messages from the pac file
@@ -32,7 +63,7 @@ function switchToDatProtocol(details) {
 
 /**
  * Add a site which should be loaded over dat instead of https. Instructs the pac file to proxy
- * requests to this host via the dat-gateway, and to downgrade any requests to https address for 
+ * requests to this host via the dat-gateway, and to downgrade any requests to https address for
  * this site, so the proxying can work.
  */
 function addDatSite(host) {
@@ -146,11 +177,13 @@ browser.webRequest.onCompleted.addListener((details) => {
         if (wellKnownCache.has(host)) {
             resolve(Promise.resolve(wellKnownCache.get(host)));
         }
-        fetch(`https://${host}/.well-known/dat`, { redirect: 'manual' }).then((resp) => {
-            wellKnownCache.set(host, resp.ok);
-            resolve(resp.ok);
+        postMessageNative({ action: 'resolveName', name: host }).then((resp) => {
+            resolve(resp);
+        }, (error) => {
+            resolve(false);
         });
     })).then((wellKnown) => {
+        wellKnownCache.set(host, rwellKnownesp);
         if (wellKnown) {
             showDatAvailableIcon(details.tabId);
         }
